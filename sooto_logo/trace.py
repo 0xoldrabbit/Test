@@ -28,6 +28,8 @@ CORNER = dict(reach=3.0, angle=50.0)        # px either side, minimum turn in de
 SMOOTH = dict(L=2.2, M=3.0, S=8.0)          # diffusion sigma, reference px
 OPEN_R = dict(L=0.0, M=3.5, S=16.0)
 # the bare body keeps only undulations longer than this (px); t bar and ears need a finer one
+# a strand = outline lifting more than `lift` px off the bare body; drop the lowest fraction
+FUR = dict(lift=1.5, drop=0.35)
 BODY_CUTOFF = dict(S=85.0, o1=85.0, o2=85.0, t=42.0, o3=62.0)
 
 
@@ -123,6 +125,9 @@ def main():
             out.append(smooth_pinned(P, find_corners(P, MIN_TURN[name]), SMOOTH[name]))
         levels[name] = sorted(out, key=lambda P: P[:, 0].min())      # Soo, t, cat-o
 
+    counts = [thin_fur(levels["L"], levels["S"], i) for i in range(len(levels["L"]))]
+    print("fur strands removed / total:", sum(c[0] for c in counts), "/", sum(c[1] for c in counts))
+
     joints = crevices(levels["S"][0])
     letters = {}
     for name, (soo, t, cat) in levels.items():
@@ -142,6 +147,50 @@ def main():
     for c in counters:
         print("counter", c)
     print("mark", mark)
+
+
+def thin_fur(fur, bare, i):
+    """Drop the shortest strands of piece i: where the furry outline leaves the bare body
+    for a short, low excursion that ends in a sharp tip, follow the body instead."""
+    P, B = fur[i], bare[i]
+    step = 4
+    near = np.empty(len(P), int)
+    dist = np.empty(len(P))
+    for a in range(0, len(P), 500):                       # nearest body point, chunked
+        D = np.hypot(P[a:a + 500, None, 0] - B[None, ::step, 0],
+                     P[a:a + 500, None, 1] - B[None, ::step, 1])
+        near[a:a + 500] = D.argmin(axis=1) * step
+        dist[a:a + 500] = D.min(axis=1)
+    off = dist > FUR["lift"]
+    shift = int(np.argmin(off))                           # start outside any strand
+    idx = (np.arange(len(P)) + shift) % len(P)
+    edges = np.flatnonzero(np.diff(off[idx].astype(int)))
+    tips = set(find_corners(P, 50.0).tolist())
+    runs = []
+    for a, b in zip(edges[::2], edges[1::2] + 1):         # a, b: last/first body-hugging points
+        span = idx[a:b + 1]
+        if tips & set(span.tolist()):                     # ears and t lobes have no sharp tip
+            runs.append((dist[span].max(), a, b))
+    if not runs:
+        return 0, 0
+    limit = np.quantile([r[0] for r in runs], FUR["drop"])
+    keep = np.ones(len(P), bool)
+    patches = {}
+    for h, a, b in runs:
+        j0, j1 = near[idx[a]], near[idx[b]]
+        n = (j1 - j0) % len(B)
+        if h <= limit and n < len(B) // 4:
+            keep[idx[a + 1:b]] = False
+            patches[idx[a]] = B[(j0 + np.arange(1, n)) % len(B)]
+    out = []
+    for k in range(len(P)):
+        if keep[k]:
+            out.append(P[k:k + 1])
+        if k in patches:
+            out.append(patches[k])
+    fur[i] = smooth_pinned(resample(np.vstack(out), ds=DS),
+                           find_corners(resample(np.vstack(out), ds=DS), 50.0), 1.0)
+    return len(patches), len(runs)
 
 
 LETTERS = ("S", "o1", "o2", "t", "o3")
