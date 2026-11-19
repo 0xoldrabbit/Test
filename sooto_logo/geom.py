@@ -77,6 +77,21 @@ def gauss_closed(v, sigma):
     return np.real(np.fft.ifft(np.fft.fft(v, axis=0) * (w[:, None] if v.ndim > 1 else w), axis=0))
 
 
+def lowpass_closed(P, cutoff, ds, order=3):
+    """Butterworth low-pass along arclength: removes ripples shorter than `cutoff`
+    without shrinking the larger shape (unlike a Gaussian)."""
+    f = np.abs(np.fft.fftfreq(len(P), d=ds))
+    H = 1.0 / (1.0 + (f * cutoff) ** (2 * order))
+    return np.real(np.fft.ifft(np.fft.fft(P, axis=0) * H[:, None], axis=0))
+
+
+def centroid(P):
+    """Area centroid of a closed polygon."""
+    x, y = P[:, 0], P[:, 1]
+    c = x * np.roll(y, -1) - np.roll(x, -1) * y
+    return np.array([((x + np.roll(x, -1)) * c).sum(), ((y + np.roll(y, -1)) * c).sum()]) / (3 * c.sum())
+
+
 def frame(P):
     """Unit tangent and left-hand normal of a closed loop."""
     t = np.roll(P, -1, axis=0) - np.roll(P, 1, axis=0)

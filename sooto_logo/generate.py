@@ -15,7 +15,7 @@ import json
 import math
 import os
 import numpy as np
-from geom import area, resample
+from geom import area, centroid, resample
 from trace import find_corners, DS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +29,9 @@ XHEIGHT = 0.88                                # body rows = this far up from a l
 CLEAR = 0.03                                  # minimum gap above the x-height / U (ears, t bar)
 FIT_TOL = 0.30                                # Bezier fitting tolerance, px
 MARK_LEVELS = ("L", "M")
+# optical compensation: ears grow as the logo shrinks, and more so alone in a square
+EAR_GAIN = dict(wordmark=dict(L=1.0, M=1.0, S=1.45), icon=dict(L=1.35, M=1.45, S=1.75))
+ICON_FILL = 0.62                              # glyph size / icon side
 
 
 # -------------------------------------------------------------------- layout
@@ -92,6 +95,20 @@ def counters(d, U, place, grow=1.0):
                          x * math.sin(rot) + y * math.cos(rot)])
     return {k: place(k, np.array([[c["cx"], c["cy"]]]))[0] + E
             for k, c in zip(("o1", "o2", "o3"), cs)}
+
+
+def stretch_ears(P, k, centre, soft=8.0):
+    """Stretch everything above the valley between the ears by factor k.
+    y' = y0 - (d + (k-1) d^2 / (d + soft)),  d = height above the valley: C1 at d = 0."""
+    if k == 1.0:
+        return P
+    up = P[:, 1] < centre[1]
+    left = P[up & (P[:, 0] < centre[0])]
+    right = P[up & (P[:, 0] >= centre[0])]
+    x0, x1 = left[np.argmin(left[:, 1]), 0], right[np.argmin(right[:, 1]), 0]
+    y0 = P[up & (P[:, 0] > x0) & (P[:, 0] < x1), 1].max()
+    d = np.maximum(y0 - P[:, 1], 0)
+    return np.column_stack([P[:, 0], np.where(d > 0, y0 - d - (k - 1) * d * d / (d + soft), P[:, 1])])
 
 
 def astroid(m, n=96):
@@ -172,7 +189,10 @@ def path(P, sign):
 # -------------------------------------------------------------------- export
 def compose(d, level, which=LETTERS):
     U, T, place, _ = layout(d)
+    gain = EAR_GAIN["wordmark" if len(which) > 1 else "icon"][level]
+    cat = place("o3", np.array([[d["counters"][2]["cx"], d["counters"][2]["cy"]]]))[0]
     loops = [place(k, np.array(d["letters"][level][k])) for k in which]
+    loops = [stretch_ears(P, gain, cat) if k == "o3" else P for k, P in zip(which, loops)]
     grow = 1.10 if level == "S" else 1.0
     holes = [E for k, E in counters(d, U, place, grow).items() if k in which]
     mark = None
@@ -186,9 +206,10 @@ def svg(loops, holes, mark, ink=INK, bg=None, mark_fill=None, pad=20, square=Fal
     A = np.vstack(loops)
     x, y = A.min(axis=0) - pad
     w, h = np.ptp(A, axis=0) + 2 * pad
-    if square:
-        side = max(w, h)
-        x, y, w, h = x - (side - w) / 2, y - (side - h) / 2, side, side
+    if square:                       # optical centring: by area centroid, not bounding box
+        side = max(np.ptp(A, axis=0)) / ICON_FILL
+        c = centroid(loops[0])
+        x, y, w, h = c[0] - side / 2, c[1] - side / 2, side, side
     parts = [path(P, +1) for P in loops] + [path(P, -1) for P in holes]
     if mark is not None and not mark_fill:
         parts.append(path(mark, -1))
@@ -218,12 +239,12 @@ def main():
     files = {}
     for lv in ("L", "M", "S"):
         files[f"sooto-wordmark-{lv}.svg"] = svg(*compose(d, lv))
-        files[f"sooto-icon-{lv}.svg"] = svg(*compose(d, lv, ("o3",)), bg=PURPLE, pad=55,
+        files[f"sooto-icon-{lv}.svg"] = svg(*compose(d, lv, ("o3",)), bg=PURPLE,
                                             square=True, radius=0.22)
     files["sooto-wordmark-L-dark.svg"] = svg(*compose(d, "L"), ink=PAPER, bg=INK,
                                              mark_fill=MOSS, pad=50)
     files["sooto-icon-L-dark.svg"] = svg(*compose(d, "L", ("o3",)), ink=PAPER, bg=INK,
-                                         pad=55, square=True, radius=0.22)
+                                         square=True, radius=0.22)
     for name, (text, n) in files.items():
         with open(os.path.join(out, name), "w") as f:
             f.write(text + "\n")

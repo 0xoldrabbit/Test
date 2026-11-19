@@ -18,7 +18,7 @@ import json
 import os
 import numpy as np
 from PIL import Image
-from geom import marching_squares, area, resample, gauss_closed
+from geom import marching_squares, area, resample, gauss_closed, lowpass_closed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CROP = (60, 70, 1100, 520)      # the large wordmark
@@ -27,6 +27,8 @@ DS = 0.5                        # outline sample spacing, reference px
 CORNER = dict(reach=3.0, angle=50.0)        # px either side, minimum turn in degrees
 SMOOTH = dict(L=2.2, M=3.0, S=8.0)          # diffusion sigma, reference px
 OPEN_R = dict(L=0.0, M=3.5, S=16.0)
+# the bare body keeps only undulations longer than this (px); t bar and ears need a finer one
+BODY_CUTOFF = dict(S=85.0, o1=85.0, o2=85.0, t=42.0, o3=62.0)
 
 
 def disk_filter(M, r):
@@ -125,6 +127,9 @@ def main():
     letters = {}
     for name, (soo, t, cat) in levels.items():
         S, o1, o2 = split_soo(soo, joints)
+        if name == "S":       # letters are separate now, so the body can be ironed flat
+            S, o1, o2, t, cat = (lowpass_closed(resample(P, ds=DS), BODY_CUTOFF[k], DS)
+                                 for k, P in zip(LETTERS, (S, o1, o2, t, cat)))
         letters[name] = {k: np.round(v, 2).tolist()
                          for k, v in zip(LETTERS, (S, o1, o2, t, cat))}
 
