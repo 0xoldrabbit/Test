@@ -44,6 +44,7 @@ def opening(ink, r):
 
 
 def find_corners(P, min_angle):
+    """Indices where the outline turns by more than min_angle within CORNER[reach]."""
     k = int(round(CORNER["reach"] / DS))
     a = P - np.roll(P, k, axis=0)
     b = np.roll(P, -k, axis=0) - P
@@ -107,30 +108,79 @@ def main():
     mark = rnd(dict(cx=star[:, 0].mean(), cy=star[:, 1].mean(),
                     r=np.abs(star - star.mean(axis=0)).max()))
 
-    levels, n_corners = {}, {}
+    levels = {}
     for name, r in OPEN_R.items():
         if r > 0:
-            M = opening(ink, r * UP)
-            field, level = disk_filter(M, 1.5), 0.5
-            pieces = [L for L in loops_of(field, level) if not is_hole(L)]
+            pieces = [L for L in loops_of(disk_filter(opening(ink, r * UP), 1.5), 0.5)
+                      if not is_hole(L)]
         else:
             pieces = [L for L in raw if not is_hole(L)]
-        out, count = [], 0
+        out = []
         for L in pieces:
-            P = resample(L, ds=DS)
-            corners = find_corners(P, 95.0 if name == "S" else CORNER["angle"])
-            count += len(corners)
-            out.append(np.round(smooth_pinned(P, corners, SMOOTH[name]), 2).tolist())
-        levels[name], n_corners[name] = out, count
+            P = resample(L if area(L) > 0 else L[::-1], ds=DS)
+            out.append(smooth_pinned(P, find_corners(P, MIN_TURN[name]), SMOOTH[name]))
+        levels[name] = sorted(out, key=lambda P: P[:, 0].min())      # Soo, t, cat-o
+
+    joints = crevices(levels["S"][0])
+    letters = {}
+    for name, (soo, t, cat) in levels.items():
+        S, o1, o2 = split_soo(soo, joints)
+        letters[name] = {k: np.round(v, 2).tolist()
+                         for k, v in zip(LETTERS, (S, o1, o2, t, cat))}
 
     with open(os.path.join(HERE, "shape.json"), "w") as f:
-        json.dump(dict(crop=CROP, levels=levels, counters=counters, mark=mark), f)
-    for name in levels:
-        spans = [(round(min(p[0] for p in L)), round(max(p[0] for p in L))) for L in levels[name]]
-        print(name, "pieces x-span", spans, "corners", n_corners[name])
+        json.dump(dict(crop=CROP, letters=letters, counters=counters, mark=mark), f)
+    print("joints", joints.round(1).tolist())
+    for k in LETTERS:
+        P = np.array(letters["S"][k])
+        print(k, "x", P[:, 0].min(), P[:, 0].max(), "y", P[:, 1].min(), P[:, 1].max())
     for c in counters:
         print("counter", c)
     print("mark", mark)
+
+
+LETTERS = ("S", "o1", "o2", "t", "o3")
+MIN_TURN = dict(L=50.0, M=50.0, S=95.0)
+
+
+def signed_turn(P, k):
+    a = P - np.roll(P, k, axis=0)
+    b = np.roll(P, -k, axis=0) - P
+    return np.degrees(np.arctan2(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0], (a * b).sum(axis=1)))
+
+
+def crevices(P):
+    """The four sharp concave corners where S|o and o|o meet (P is positively wound)."""
+    k = int(round(CORNER["reach"] / DS))
+    turn = signed_turn(P, k)
+    idx = [i for i in find_corners(P, 95.0) if turn[i] < 0]
+    assert len(idx) == 4, idx
+    return P[idx]
+
+
+def bridge(run_a, run_b):
+    """Hidden part of a letter under its neighbour: cubic Bezier continuing both tangents."""
+    near, far = int(4 / DS), int(18 / DS)
+    p0, p1 = run_a[-1], run_b[0]
+    t0 = run_a[-near] - run_a[-far]
+    t1 = run_b[far] - run_b[near]
+    h = 0.5 * np.hypot(*(p1 - p0))
+    c0 = p0 + h * t0 / np.hypot(*t0)
+    c1 = p1 - h * t1 / np.hypot(*t1)
+    u = np.linspace(0, 1, 40)[1:-1, None]
+    return (1 - u) ** 3 * p0 + 3 * u * (1 - u) ** 2 * c0 + 3 * u * u * (1 - u) * c1 + u ** 3 * p1
+
+
+def split_soo(P, joints):
+    """Cut the fused S-o-o piece at the joints and complete each letter."""
+    i0, i1, i2, i3 = sorted(int(np.argmin(np.hypot(*(P - j).T))) for j in joints)
+    outer = np.vstack([P[i3:], P[:i0 + 1]])          # joints nest like brackets
+    mid_a, mid_b = P[i0:i1 + 1], P[i2:i3 + 1]
+    inner = P[i1:i2 + 1]
+    parts = [np.vstack([outer, bridge(outer, outer)]),
+             np.vstack([mid_a, bridge(mid_a, mid_b), mid_b, bridge(mid_b, mid_a)]),
+             np.vstack([inner, bridge(inner, inner)])]
+    return sorted(parts, key=lambda L: L[:, 0].mean())
 
 
 if __name__ == "__main__":
