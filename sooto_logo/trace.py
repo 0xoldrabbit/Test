@@ -28,8 +28,9 @@ CORNER = dict(reach=3.0, angle=50.0)        # px either side, minimum turn in de
 SMOOTH = dict(L=2.2, M=3.0, S=8.0)          # diffusion sigma, reference px
 OPEN_R = dict(L=0.0, M=3.5, S=16.0)
 # the bare body keeps only undulations longer than this (px); t bar and ears need a finer one
-# a strand = outline lifting more than `lift` px off the bare body; drop the lowest fraction
-FUR = dict(lift=1.5, drop=0.35)
+# a strand = outline lifting more than `lift` px off the bare body; drop the lowest fraction.
+# then a flick = tip and notch within `pair` px with a back shorter than `reach`; drop `teeth` of them
+FUR = dict(lift=1.5, drop=0.35, teeth=0.5, pair=22.0, reach=140.0)
 BODY_CUTOFF = dict(S=85.0, o1=85.0, o2=85.0, t=42.0, o3=62.0)
 
 
@@ -127,6 +128,8 @@ def main():
 
     counts = [thin_fur(levels["L"], levels["S"], i) for i in range(len(levels["L"]))]
     print("fur strands removed / total:", sum(c[0] for c in counts), "/", sum(c[1] for c in counts))
+    counts = [thin_teeth(levels["L"], i) for i in range(len(levels["L"]))]
+    print("flicks removed / total:", sum(c[0] for c in counts), "/", sum(c[1] for c in counts))
 
     joints = crevices(levels["S"][0])
     letters = {}
@@ -191,6 +194,58 @@ def thin_fur(fur, bare, i):
     fur[i] = smooth_pinned(resample(np.vstack(out), ds=DS),
                            find_corners(resample(np.vstack(out), ds=DS), 50.0), 1.0)
     return len(patches), len(runs)
+
+
+def thin_teeth(fur, i):
+    """Remove the smallest remaining flicks, never two neighbours.
+    A flick is a tip and a notch close together plus one long smooth back, so the
+    outline from the notch across the back to the next corner is replaced by a
+    Hermite curve that continues the directions on either side."""
+    P = fur[i]
+    n = len(P)
+    turn = signed_turn(P, int(round(CORNER["reach"] / DS)))
+    corners = [int(c) for c in find_corners(P, 50.0)]
+    m = len(corners)
+    near, far = int(2 / DS), int(9 / DS)
+    flicks = []
+    for c in range(m):
+        w, a, b, x = corners[c - 1], corners[c], corners[(c + 1) % m], corners[(c + 2) % m]
+        if turn[a] * turn[b] >= 0 or (b - a) % n > FUR["pair"] / DS:
+            continue
+        # notch first: the back runs on to x.  tip first: the back came from w.
+        p0, p1 = (a, x) if turn[a] < 0 else (w, b)
+        if (p1 - p0) % n > FUR["reach"] / DS:
+            continue
+        tip = b if turn[a] < 0 else a
+        ab, v = P[p1] - P[p0], P[tip] - P[p0]
+        flicks.append((abs(ab[0] * v[1] - ab[1] * v[0]) / np.hypot(*ab), p0, p1, turn[a] < 0))
+    used, patches = set(), {}
+    keep = np.ones(n, bool)
+    for h, p0, p1, notch_first in sorted(flicks):
+        if len(patches) >= FUR["teeth"] * len(flicks):
+            break
+        if p0 in used or p1 in used:
+            continue
+        used |= {p0, p1}
+        t0 = P[(p0 - near) % n] - P[(p0 - far) % n]
+        t1 = (P[(p1 - near) % n] - P[(p1 - far) % n]) if notch_first else \
+             (P[(p1 + far) % n] - P[(p1 + near) % n])
+        hlen = np.hypot(*(P[p1] - P[p0])) / 3
+        c0 = P[p0] + hlen * t0 / np.hypot(*t0)
+        c1 = P[p1] - hlen * t1 / np.hypot(*t1)
+        u = np.linspace(0, 1, 60)[1:-1, None]
+        patches[p0] = ((1 - u) ** 3 * P[p0] + 3 * u * (1 - u) ** 2 * c0 +
+                       3 * u * u * (1 - u) * c1 + u ** 3 * P[p1])
+        keep[(p0 + 1 + np.arange((p1 - p0 - 1) % n)) % n] = False
+    out = []
+    for k in range(n):
+        if keep[k]:
+            out.append(P[k:k + 1])
+        if k in patches:
+            out.append(patches[k])
+    Q = resample(np.vstack(out), ds=DS)
+    fur[i] = smooth_pinned(Q, find_corners(Q, 50.0), 1.0)
+    return len(patches), len(flicks)
 
 
 LETTERS = ("S", "o1", "o2", "t", "o3")
